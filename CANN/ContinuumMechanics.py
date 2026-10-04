@@ -1,6 +1,5 @@
 # Standard imports
-import keras as k
-import tensorflow as tf
+import torch
 import numpy as np
 
 """
@@ -54,56 +53,49 @@ def wrapper(numTens, numDir):
 	"""
 	
 	def ten2_H(L, w): # Generalized structural tensors: H_r = \sum_i w_ri * L_i [?,numTens,3,3]
-		batchSize = tf.shape(w)[0]
+		batchSize = w.shape[0]
 
 		# Create L_0 and add it to L
-		shaper = batchSize*tf.constant([1,0,0,0]) + tf.constant([0,1,1,1])
-		L_0 = 1.0/3.0 * tf.tile(tf.keras.backend.expand_dims(tf.keras.backend.expand_dims(tf.eye(3),0),0), shaper)
+		eye = torch.eye(3, dtype=w.dtype, device=w.device)
+		L_0 = torch.tile(eye.unsqueeze(0).unsqueeze(0), (batchSize, 1, 1, 1)) / 3.0
 		if numDir > 0:
-			L = tf.concat([L_0, L], axis=1)
+			L = torch.concat([L_0, L], dim=1)
 		else:
 			L = L_0
 
 		# Expand L (to get one for each numTens)
-		shaper = numTens*tf.constant([0,1,0,0,0]) + tf.constant([1,0,1,1,1])
-		L = tf.tile(tf.keras.backend.expand_dims(L, 1), shaper)
+		L = torch.tile(L.unsqueeze(1), (1, numTens, 1, 1, 1))
 
 		# Expand w
-		shaper = tf.constant([1,1,1,3])
-		w = tf.tile(tf.keras.backend.expand_dims(w, 3), shaper)
-		shaper = tf.constant([1,1,1,1,3])
-		w = tf.tile(tf.keras.backend.expand_dims(w, 4), shaper)
+		w = torch.tile(w.unsqueeze(3), (1, 1, 1, 3))
+		w = torch.tile(w.unsqueeze(4), (1, 1, 1, 1, 3))
 	
 		# Multiply L with weights
-		L_weighted = tf.math.multiply(L, w)
+		L_weighted = L * w
 	
 		# Sum them up for the corresponding H
-		H = tf.math.reduce_sum(L_weighted, axis=2)
+		H = torch.sum(L_weighted, dim=2)
 	
 		return H
 		
 	def invariants_I(C, H): # Generalized invariants I: I_r = trace(C*H_r) [?,numTens]
-		shaper = tf.constant([1,numTens,1,1])
-		C_tile = tf.tile(tf.keras.backend.expand_dims(C, 1), shaper)
+		C_tile = torch.tile(C.unsqueeze(1), (1, numTens, 1, 1))
 
-		return tf.linalg.trace(tf.matmul(C_tile,H))
+		return (C_tile @ H).diagonal(offset=0, dim1=-2, dim2=-1).sum(dim=-1)
 
 	def invariants_J(C, H): # Generalized invariants J: J_r = trace(cofactor(C)*H_r) [?,numTens]		
-		shaper = tf.constant([1,numTens,1,1])
-		C_tile = tf.tile(tf.keras.backend.expand_dims(C, 1), shaper)
+		C_tile = torch.tile(C.unsqueeze(1), (1, numTens, 1, 1))
 		
-		detC_tile = tf.linalg.det(C_tile)
-		shaper = tf.constant([1,1,3])
-		detC_tile = tf.tile(tf.keras.backend.expand_dims(detC_tile, 2), shaper)
-		shaper = tf.constant([1,1,1,3])
-		detC_tile = tf.tile(tf.keras.backend.expand_dims(detC_tile, 3), shaper)
+		detC_tile = torch.linalg.det(C_tile)
+		detC_tile = torch.tile(detC_tile.unsqueeze(2), (1, 1, 3))
+		detC_tile = torch.tile(detC_tile.unsqueeze(3), (1, 1, 1, 3))
 		
-		invTransC = tf.linalg.inv(tf.transpose(C_tile, perm=[0, 1, 3, 2]))
+		invTransC = torch.linalg.inv(torch.transpose(C_tile, 3, 2))
 		
-		mul = tf.math.multiply(detC_tile, invTransC)
-		matmul = tf.matmul(mul, H)
+		mul = torch.multiply(detC_tile, invTransC)
+		matmul = mul @ H
 		
-		return tf.linalg.trace(matmul)
+		return matmul.diagonal(offset=0, dim1=-2, dim2=-1).sum(dim=-1)
 		
 	return ten2_H, invariants_I, invariants_J
 
@@ -129,26 +121,24 @@ def defGrad_ps(lam): # Deformation gradient for incompressible pure shear loadin
 	return F
 
 def ten2_C(F): # Right Cauchy-Green tensor: C = F^T * F [?,3,3]
-	return tf.linalg.matmul(F,F,transpose_a=True)
+	return F.transpose(-2, -1) @ F
 
 def ten2_F_isoRef(F): # Deformation gradient in reference configuration [?,3,3]
 	# In Order for the other formulae to work we need the correct dimension required to produce enough eye matrices/tensors 
-	shaper = tf.shape(F)[0]
-	shaper = shaper*tf.constant([1,0,0]) + tf.constant([0,1,1])
-
-	F_isoRef = tf.tile(tf.keras.backend.expand_dims(tf.eye(3),0), shaper)
+	eye = torch.eye(3, dtype=F.dtype, device=F.device).unsqueeze(0)
+	F_isoRef = torch.tile(eye, (F.shape[0],1,1))
 	
 	return F_isoRef
 
 def ten2_L(dir): # Structural tensor L_i = l_i (x) l_i [?,numDir,3,3]
-	dir = tf.keras.backend.expand_dims(dir, 3)
-	dir_t = tf.transpose(dir, perm=[0, 1, 3, 2])
-	L = tf.linalg.matmul(dir, dir_t)
+	dir = dir.unsqueeze(3)
+	dir_t = torch.transpose(dir, 3, 2)
+	L = dir @ dir_t
 	
 	return L
 
 def invariant_I3(C): # Third invariant of a tensor C: I3 = det(C) [?,1]
-	return tf.keras.backend.expand_dims(tf.linalg.det(C), 1)
+	return (torch.linalg.det(C)).unsqueeze(1)
 
 def invariants2principalStretches(I1_arr, I2_arr, I3_arr): # Calculates the principal stretches based on invariants of C [only used for one specific kind of plot]
 	# Itskov, 2015, Tensor Algebra and Tensor Analysis for Engineers, 4th edition, p. 103-104
@@ -176,23 +166,29 @@ def invariants2principalStretches(I1_arr, I2_arr, I3_arr): # Calculates the prin
 
 	return principalStretch
 
-def ten2_P(Psi, F): # First Piola Kirchhoff stress tensor: P = dPsi / dF [?,3,3]
-	der = tf.gradients(Psi, F, unconnected_gradients='zero')
-	return der[0]
+def ten2_P(Psi, F):        # First Piola-Kirchhoff stress: P = dPsi/dF  [?,3,3]
+    der = torch.autograd.grad(
+        Psi, F,
+        grad_outputs=torch.ones_like(Psi),   # (1) Psi is [b,1], not scalar
+        create_graph=True,                    # (2) so P stays differentiable for training
+        retain_graph=True,
+        materialize_grads=True,               # (3) ≈ unconnected_gradients='zero'
+    )[0]
+    return der
 	
 def ten2_P_lagMul(P_iso, F, lagMul): # Lagrange multiplier for incompressibility [?,1]
-	FtransInv = tf.linalg.inv(tf.transpose(F, perm=[0, 2, 1]))
-	lagMul = tf.tile(tf.keras.backend.expand_dims(lagMul,2), tf.constant([1,3,3]))
-	lastTerm = tf.math.multiply(lagMul, FtransInv)
+	FtransInv = torch.linalg.inv(torch.transpose(F, dim0=2, dim1=1))
+	lagMul = torch.tile(lagMul.unsqueeze(2), (1,3,3))
+	lastTerm = torch.multiply(lagMul, FtransInv)
 
-	return tf.math.subtract(P_iso, lastTerm)
+	return P_iso - lastTerm
 
 def ten2_S(P, F): # Second Piola Kirchhoff stress tensor: S = F^-1 * P [?,3,3]
-	return tf.matmul(tf.linalg.inv(F), P)
+	return torch.linalg.inv(F) @ P
 
 def ten2_sigma(P, F, J): # Cauchy stress tensor: sigma = J^-1 * P * F^T [?,3,3]
-	OneOverJ = tf.tile(tf.keras.backend.expand_dims(tf.math.divide(1.0,J),2), tf.constant([1,3,3]))
-	return tf.math.multiply(OneOverJ, tf.matmul(P, tf.transpose(F, perm=[0, 2, 1])))
+	OneOverJ = torch.tile((1.0 / J).unsqueeze(2), (1,3,3))
+	return torch.multiply(OneOverJ, P @ torch.transpose(F, dim0=2, dim1=1))
 
 
 ##########################################################################################

@@ -1,5 +1,6 @@
 # Standard imports
 import torch
+import torch.nn as nn
 import numpy as np
 
 """
@@ -144,8 +145,8 @@ def invariants2principalStretches(I1_arr, I2_arr, I3_arr): # Calculates the prin
 	# Itskov, 2015, Tensor Algebra and Tensor Analysis for Engineers, 4th edition, p. 103-104
 	
 	dim = I1_arr.shape
-	eig = np.empty((dim[0],3,), dtype=np.complex_)
-	eig[:,:] = np.NaN
+	eig = np.empty((dim[0],3,), dtype=np.complex64)
+	eig[:,:] = np.nan
 
 	for i in range(dim[0]):
 		I1 = I1_arr[i]
@@ -198,66 +199,59 @@ def ten2_sigma(P, F, J): # Cauchy stress tensor: sigma = J^-1 * P * F^T [?,3,3]
 ##########################################################################################
 
 
-def pre_Psi(numExtra, numTens, numDir, w_model, dir_model): # Deals with everything before the strain-energy is used (deformation measures, structural tensors, invariants)
+def pre_Psi(F, extra, numExtra, numTens, numDir, w_model, dir_model): # Deals with everything before the strain-energy is used (deformation measures, structural tensors, invariants)
 	ten2_H, invariants_I, invariants_J = wrapper(numTens, numDir)
-	
-	if numExtra == 0:
-		extra = []
-	else:
-		extra = k.layers.Input(shape=(numExtra,), name='extra') # INPUT
-	
+
 	# Deformation measures
-	F = k.layers.Input(shape=(3,3,), name='F') # INPUT
-	C = k.layers.Lambda(lambda F: ten2_C(F), name='C' )(F)
-	
+	C = ten2_C(F)
+
 	# Directions and structure tensors
 	if numDir == 0:
-		dir = [] # we do not need directions (and hence their sub-ANN) at all
-		w = tf.ones([tf.shape(F)[0],numTens,1]) # we do not need a sub-ANN to get the weights
-		L = []
+		dir = None # we do not need directions (and hence their sub-ANN) at all
+		w = torch.ones(F.shape[0], numTens, 1, dtype=F.dtype, device=F.device) # we do not need a sub-ANN to get the weights
+		L = None
 	else:
 		dir = dir_model(extra)
 		w = w_model(extra)
-		L = k.layers.Lambda(lambda dir: ten2_L(dir), name='L')(dir)
+		L = ten2_L(dir)
 
 	# Generalized structure tensors
-	H = k.layers.Lambda(lambda x: ten2_H(x[0], x[1]), name='H')([L, w])
+	H = ten2_H(L, w)
 
 	# Generalized invariants
-	inv_I     = k.layers.Lambda(lambda x: invariants_I(x[0], x[1]), name='invariants_I'   )([C,H])
-	inv_J     = k.layers.Lambda(lambda x: invariants_J(x[0], x[1]), name='invariants_J'   )([C,H])
-	inv_III_C = k.layers.Lambda(lambda C: invariant_I3(C)         , name='invariant_III_C')(C)
-	
-	# Determination of the eact reference configuration
-	F_isoRef         = k.layers.Lambda(lambda F: ten2_F_isoRef(F), output_shape=(None,3,3), name='F_isoRef'              )(F)
-	C_isoRef         = k.layers.Lambda(lambda F: ten2_C(F)                                , name='C_isoRef'              )(F_isoRef)
-	inv_I_isoRef     = k.layers.Lambda(lambda x: invariants_I(x[0], x[1])                 , name='invariants_I_isoRef'   )([C_isoRef,H])
-	inv_J_isoRef     = k.layers.Lambda(lambda x: invariants_J(x[0], x[1])                 , name='invariants_J_isoRef'   )([C_isoRef,H])
-	inv_III_C_isoRef = k.layers.Lambda(lambda C_isoRef: invariant_I3(C_isoRef)            , name='invariant_III_C_isoRef')(C_isoRef)
+	inv_I     = invariants_I(C,H)
+	inv_J     = invariants_J(C,H)
+	inv_III_C = invariant_I3(C)
+
+	# Determination of the exact reference configuration
+	F_isoRef         = ten2_F_isoRef(F)
+	C_isoRef         = ten2_C(F_isoRef)
+	inv_I_isoRef     = invariants_I(C_isoRef,H)
+	inv_J_isoRef     = invariants_J(C_isoRef,H)
+	inv_III_C_isoRef = invariant_I3(C_isoRef)
 
 	return F, extra, C, inv_I, inv_J, inv_III_C, F_isoRef, C_isoRef, inv_I_isoRef, inv_J_isoRef, inv_III_C_isoRef
 
 def post_Psi(Psi, F): # Deals with everything after the strain-energy is used [variant for compressible materials] (stresses)
-	P = k.layers.Lambda(lambda x: ten2_P(x[0], x[1]), name='P'    )([Psi, F])
+	P = ten2_P(Psi, F)
 
 	return post_Psi_both(Psi, P, F)
 
 def post_Psi_incomp(Psi, Psi_isoRef, F, F_isoRef): # Deals with everything after the strain-energy is used [variant for incompressible materials] (stresses)
-	P_iso    = k.layers.Lambda(lambda x: ten2_P(x[0], x[1])                      , name='P_iso'   )([Psi, F])
-	P_isoRef = k.layers.Lambda(lambda x: ten2_P(x[0], x[1])                      , name='P_isoRef')([Psi_isoRef, F_isoRef])
-	lagMul   = k.layers.Lambda(lambda P: tf.keras.backend.expand_dims(P[:,0,0],1), name='lagMul'  )(P_isoRef)
-	P        = k.layers.Lambda(lambda x: ten2_P_lagMul(x[0], x[1], x[2])         , name='P'       )([P_iso, F, lagMul])
+	P_iso    = ten2_P(Psi, F)
+	P_isoRef = ten2_P(Psi_isoRef, F_isoRef)
+	lagMul   = (P_isoRef[:,0,0]).unsqueeze(1)
+	P        = ten2_P_lagMul(P_iso, F, lagMul)
 
 	return post_Psi_both(Psi, P, F)
 
 def post_Psi_both(Psi, P, F): # Common parts from post_Psi & post_Psi_incomp
-	S     = k.layers.Lambda(lambda x: ten2_S(x[0], x[1])                              , name='S'    )([P, F])
-	J     = k.layers.Lambda(lambda F: tf.keras.backend.expand_dims(tf.linalg.det(F),1), name='J'    )(F)
-	sigma = k.layers.Lambda(lambda x: ten2_sigma(x[0], x[1], x[2])                    , name='sigma')([P, F, J])
-	P11   = k.layers.Lambda(lambda P: tf.keras.backend.expand_dims(P[:,0,0],1)        , name='P11'  )(P)
+	S = ten2_S(P, F)
+	J = (torch.linalg.det(F)).unsqueeze(1)
+	sigma = ten2_sigma(P, F, J)
+	P11 = (P[:,0,0]).unsqueeze(1)
 
 	return P11, P, S, sigma
-
 
 ##########################################################################################
 ##########################################################################################
@@ -271,7 +265,7 @@ def MooneyRivlin6term_wrapper(c10, c20, c30, c01, c02, c03):
 		I1 = I*3.0
 		I2 = J*3.0
 
-		Psi = k.layers.Lambda(lambda x: c10*(x[0]-3.0) + c20*(x[0]-3.0)**2 + c30*(x[0]-3.0)**3 + c01*(x[1]-3.0) + c02*(x[1]-3.0)**2 + c03*(x[1]-3.0)**3, name='Psi')([I1, I2, I3])
+		Psi = c10*(I1-3.0) + c20*(I1-3.0)**2 + c30*(I1-3.0)**3 + c01*(I2-3.0) + c02*(I2-3.0)**2 + c03*(I2-3.0)**3
 
 		return Psi
 	return MooneyRivlin6term
@@ -281,7 +275,7 @@ def NeoHookean_wrapper(c):
 		I1 = I*3.0
 		I2 = J*3.0
 	
-		Psi = k.layers.Lambda(lambda x: c*(x[0]-3.0), name='Psi')([I1, I2, I3])
+		Psi = c*(I1-3.0)
 
 		return Psi
 	return NeoHookean
@@ -291,7 +285,7 @@ def MooneyRivlin_wrapper(c1, c2):
 		I1 = I*3.0
 		I2 = J*3.0
 	
-		Psi = k.layers.Lambda(lambda x: c1*(x[0]-3.0) + c2*(x[1]-3.0), name='Psi')([I1, I2, I3])
+		Psi = c1*(I1-3.0) + c2*(I2-3.0)
 
 		return Psi
 	return MooneyRivlin

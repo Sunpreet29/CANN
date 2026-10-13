@@ -1,9 +1,12 @@
 # Standard imports
 import keras as k
 import tensorflow as tf
+import torch
+import torch.nn as nn
 
 # Own files
 from CANN import ContinuumMechanics as CM
+from CANN.subANNs import DirLayers, WLayers
 
 
 
@@ -251,3 +254,78 @@ def CANN_wrapper(Psi_layers, dir_layers, w_layers, numTens=1, numDir=0, numExtra
 		return model_fit, model_full
 		
 	return CANN
+
+
+def unitVector(dir, numDir):
+	"""
+	Transforms the flat tensor that results from the directional subANN to a properly shaped tensor which is normalized (each vector is of length 1).
+
+	Parameters
+	----------
+	dir : tensor [shape: (?, numDir * 3)]
+		Flat tensor which results from the directional subANN layers.
+
+	Returns
+	-------
+	dir : tensor [shape: (?, numDir, 3)]
+		Reshaped tensor that represents the directional vectors in normalized form (each direction vector is a unit vector).
+		
+	"""
+	dir = torch.reshape(dir, (-1, numDir, 3))		# -1 preserves the batch size, not required in Tensorflow
+	length = torch.norm(dir, p=2, dim=2, dtype=dir.dtype)	# Eucledean norm
+	dir = dir / torch.tile(length.unsqueeze(2), (1,1,3))
+
+	return dir
+
+def summation(w, numDir, numTens):
+	"""
+	Transforms the flat tensor that results from the weighting subANN to a properly shaped tensor which is normalized (the weight in each grou sum to 1).
+	
+	Parameters
+	----------
+	w : tensor [shape: (?, numTens * (numDir+1))]
+		Flat tensor which results from the weighting factor subANN layers.
+	
+	Returns
+	-------
+	w : tensor [shape: (?, numTens, numDir+1)]
+		Reshaped tensor that represents the weighting factors in normalized form (the weight in each grou sum to 1).
+		
+	"""
+
+	w = torch.reshape(w, (-1, numTens, numDir+1))	# -1 preserves the batch size, not required in Tensorflow
+	sum = torch.norm(w, dim=2, p=1)
+	w = w / torch.tile(sum.unsqueeze(2), (1,1,numDir+1))
+	
+	return w
+
+
+class Dir_subANN(nn.Module):
+	def __init__(self, numDir, numExtra):
+		super().__init__()
+		self.numDir = numDir
+		self.numExtra = numExtra
+		self.dirlayer = DirLayers(numExtra)
+		self.output_layer = nn.Linear(8, self.numDir*3, bias=False)
+		self.activation = nn.Tanh()
+
+	def forward(self, extra):
+		dir = self.activation(self.output_layer(extra))
+		dir = unitVector(dir, self.numDir)
+		return dir
+
+
+class W_subANN(nn.Module):
+	def __init__(self, numTens, numDir, numExtra):
+		super().__init__()
+		self.numTens = numTens
+		self.numDir = numDir
+		self.numExtra = numExtra
+		self.wlayer = WLayers(numExtra)
+		self.input_layer = nn.Linear(8, self.numTens*(self.numDir+1), bias=False)
+		self.activation = nn.Sigmoid()
+
+	def forward(self, extra):
+		w = self.activation(self.input_layer(extra))
+		w = summation(w)
+		return w

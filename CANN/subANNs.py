@@ -34,7 +34,7 @@ class WLayers(nn.Module):
 class PsiLayers(nn.Module):
 	def __init__(self, inDim):
 		super().__init__()
-		self.inDim = inDim
+		self.inDim = inDim		# inDim = numTens + numExtra (= numTens if numExtra==0)
 		self.nn_layerI1 = nn.Linear(self.inDim, 8)
 		self.nn_layerI2 = nn.Linear(8, 8)
 		self.nn_layerJ1 = nn.Linear(self.inDim, 8)

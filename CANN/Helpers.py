@@ -1,6 +1,7 @@
 # Standard imports
 import numpy as np
 from sklearn.model_selection import train_test_split
+import torch
 
 # Own files
 from CANN import Outputs
@@ -105,17 +106,20 @@ def loadWeights(model, outputFolder):
 
 	Parameters
 	----------
-	model : keras model
+	model : pytorch model
 		Model to load weights into.
 	outputFolder : string
 		Path where data was written to.
+	Add a map_location argument in case the model training and loading of the weights happen on different devices.
+	e.g.: model trained on GPU, but weights loaded on CPU, then use map_location='cpu'
+		  model trained on CPU, but weights loaded on GPU, then use map_location='cuda:0'
 		
 	Returns
 	-------
-	model : keras model
+	model : pytorch model
 		Model with loaded weights.
 		
 	"""
 	
-	model.load_weights(outputFolder+'modelWeights.h5')
+	model.load_state_dict(torch.load(outputFolder+'modelWeights.pth'))
 	return model

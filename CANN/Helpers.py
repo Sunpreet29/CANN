@@ -98,7 +98,7 @@ def trainValidationSplit(F, P11, extra, extraSize, trainSize=0.8, outputFolder=F
 	
 	
 	
-def loadWeights(model, outputFolder):
+def loadWeights(model, outputFolder, map_location=None):
 	"""
 	Loads weights into model.
 	
@@ -110,9 +110,9 @@ def loadWeights(model, outputFolder):
 		Model to load weights into.
 	outputFolder : string
 		Path where data was written to.
-	Add a map_location argument in case the model training and loading of the weights happen on different devices.
-	e.g.: model trained on GPU, but weights loaded on CPU, then use map_location='cpu'
-		  model trained on CPU, but weights loaded on GPU, then use map_location='cuda:0'
+	map_location : str, torch.device, or callable, optional
+        Where to remap storage when loading (e.g. 'cpu' to load GPU-trained
+        weights on a CPU machine). Forwarded to torch.load. Defaults to None.
 		
 	Returns
 	-------
@@ -121,5 +121,5 @@ def loadWeights(model, outputFolder):
 		
 	"""
 	
-	model.load_state_dict(torch.load(outputFolder+'modelWeights.pth'))
+	model.load_state_dict(torch.load(outputFolder+'modelWeights.pth', map_location=map_location))
 	return model

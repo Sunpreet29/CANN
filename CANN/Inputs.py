@@ -1,7 +1,6 @@
 # Standard imports
 import numpy as np
-import tensorflow as tf
-import keras as k
+import torch
 
 # Own files
 from CANN import ContinuumMechanics as CM
@@ -78,7 +77,7 @@ def defineProblem(problem):
 		ds = Treloar()
 		ds.createPlotCurves()
 		F, P11 = ds.createTrainingCurves()
-		extra = []
+		extra = None
 	elif problem==1:	
 		problemName = 'GeneralizedMooneyRivlin'
 
@@ -87,7 +86,7 @@ def defineProblem(problem):
 		ds = StrainEnergy(Psi, 7, 4, 5.5, True)
 		ds.createPlotCurves()
 		F, P11 = ds.createTrainingCurves()
-		extra = []
+		extra = None
 	elif problem==2:
 		problemName = 'GeneralizedMooneyRivlinNoise'
 
@@ -99,7 +98,7 @@ def defineProblem(problem):
 		mu, sigma = 0, 0.05
 		ds.noiseTrainingData(mu, sigma)
 		F, P11 = ds.getTrainingData()
-		extra = []
+		extra = None
 	
 	
 	numTens = 1
@@ -137,16 +136,16 @@ class ExternalData:
 ######################
 ######################
 
-class curve:
+class Curve:
 	def __init__(self, lam, P11, F):
 		self.lam = lam
 		self.P11 = P11
 		self.F = F
 		self.P11_pred = np.zeros(P11.shape)
-		self.P11_pred[:] = np.NaN # Initialize a spot where later on the prediction can be stored
+		self.P11_pred[:] = np.nan # Initialize a spot where later on the prediction can be stored
 		
 	def predict(self, model): 
-		self.P11_pred = model.predict(self.F) # Predict stress using the provided keras model
+		self.P11_pred = model(torch.tensor(self.F, dtype=torch.float32))[0].detach().numpy() # Predict stress using the provided Pytorch model
 		
 	def noise(self, mu, sigma): # Add noise to curve
 		noise = np.random.normal(mu, sigma, self.P11.shape)
@@ -201,9 +200,7 @@ class StrainEnergy(DataSource):
 		self.lamMax_ps = lamMax_ps
 		self.incomp = incomp
 
-		CANN_mod = CANN.CANN_wrapper(Psi, subANNs.dir_layers_wrapper(), subANNs.w_layers_wrapper(), numTens=1, numDir=0, numExtra=0, incomp=True, computePsiOnly=True)
-
-		self.model_fit, self.model_full = CANN_mod() # Create a CANN model with analytical strain energy (instead of an ANN)
+		self.model = CANN(numTens=1, numDir=0, numExtra=0, computePsiOnly=True, incomp=True, Psi=Psi) # Create a CANN model with analytical strain energy (instead of an ANN)
 	
 	def createMainCurves(self, numP_ut, numP_bt, numP_ps): # Generate the load curves for the three different load cases
 		ut = self.createCurve(self.lamMax_ut, numP_ut, CM.defGrad_ut)
@@ -215,9 +212,9 @@ class StrainEnergy(DataSource):
 	def createCurve(self, lamMax, numP, defGrad): # Create one particular load curve
 		lam = np.linspace(1, lamMax, numP)
 		F = defGrad(lam)
-		P11 = self.model_fit.predict(F, batch_size=100000) # Once we ran into an issue with the batch size. While this issue may not persist any more due to a variety of changes in the code since, it was never investigated further. Hence, a huge batch size is put to avoid potential problems. ¯\_(ツ)_/¯
+		P11 = self.model(torch.tensor(F, dtype=torch.float32))[0].detach().numpy()
 
-		return curve(lam, P11, F)
+		return Curve(lam, P11, F)
 
 		
 ######################
@@ -242,7 +239,7 @@ class Tabular(DataSource):
 		P11 = np.interp(lam, lam_tmp, P11_tmp)
 		F = defGrad(lam)
 		
-		return curve(lam, P11, F)
+		return Curve(lam, P11, F)
 
 ######################
 ######################

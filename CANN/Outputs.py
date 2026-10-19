@@ -1,7 +1,8 @@
 # Standard imports
-import keras as k
-import tensorflow as tf
 import numpy as np
+import torch
+from torchview import draw_graph
+import graphviz
 import scipy.io
 import matplotlib.pyplot as plt
 import os
@@ -109,7 +110,7 @@ def plotMainCurves(ds, outputFolder=False):
 	plt.plot(ds.plot_ps.lam , ds.plot_ps.P11_pred, color='red')
 
 	plt.legend(['Original UT', 'Prediction UT', 'Original BT', 'Prediction BT', 'Original PS', 'Prediction PS'], loc='upper left')
-	plt.grid(b=True, which='major', color='#CCCCCC', linestyle='-')
+	plt.grid(visible=True, which='major', color='#CCCCCC', linestyle='-')
 	if isinstance(outputFolder, str):
 		plt.savefig(outputFolder+'result')
 	plt.show()
@@ -177,15 +178,14 @@ def calculate2dErrorFields(ds, model_full, maxI1, maxI2, stepSizeI1=0.5, stepSiz
 	#####
 	## PSI: Predict and calculate error
 	#####
-	# Predict model response (ANN and from the strain-energy model itself)
-	Psi_ann =    model_full.get_layer('Psi').predict([I1_ann, I2_ann, I3_ann])
-	Psi_ref = ds.model_full.get_layer('Psi').predict([I1_ann, I2_ann, I3_ann])
-	
+	# Predict model response (ANN and strain-energy reference) [PyTorch]
+	Psi_ann = model_full.psi_ann(torch.tensor(I1_ann, dtype=torch.float32), torch.tensor(I2_ann, dtype=torch.float32), torch.tensor(I3_ann, dtype=torch.float32)).detach().numpy()
+	Psi_ref = ds.model.psi_ann(torch.tensor(I1_ann, dtype=torch.float32), torch.tensor(I2_ann, dtype=torch.float32), torch.tensor(I3_ann, dtype=torch.float32)).detach().numpy()
+
 	# Correct Psi to zero reference configuration
-	# (the ANN does this in a later step, so the model result is at the current step not yet corrected)
-	# (the strain-energy model itself should not require this; but does not hurt, just to be save)
-	Psi_ann_refConfig =    model_full.get_layer('Psi').predict([[1.], [1.], [1.]])
-	Psi_ref_refConfig = ds.model_full.get_layer('Psi').predict([[1.], [1.], [1.]])
+	_one = torch.ones((1, 1), dtype=torch.float32)
+	Psi_ann_refConfig = model_full.psi_ann(_one, _one, _one).detach().numpy()
+	Psi_ref_refConfig = ds.model.psi_ann(_one, _one, _one).detach().numpy()
 	Psi_ann = Psi_ann - Psi_ann_refConfig
 	Psi_ref = Psi_ref - Psi_ref_refConfig
 
@@ -199,32 +199,21 @@ def calculate2dErrorFields(ds, model_full, maxI1, maxI2, stepSizeI1=0.5, stepSiz
 	#####
 	## P: Predict and calculate error
 	#####
-	# Create inputs for ANNs
-	I_in     = tf.keras.Input(shape=(1,), name='I')
-	J_in     = tf.keras.Input(shape=(1,), name='J')
-	III_C_in = tf.keras.Input(shape=(1,), name='III_C')
-	
-	# Use models
-	Psi_ann =    model_full.get_layer('Psi')([I_in, J_in, III_C_in])
-	Psi_ref = ds.model_full.get_layer('Psi')([I_in, J_in, III_C_in])
-	
-	# Derivatives of interest	
-	dPsi_dI_ann = tf.gradients(Psi_ann, I_in)
-	dPsi_dJ_ann = tf.gradients(Psi_ann, J_in)
-	dPsi_dI_ref = tf.gradients(Psi_ref, I_in)
-	dPsi_dJ_ref = tf.gradients(Psi_ref, J_in)
+	# Derivatives of Psi w.r.t. I and J, via autograd [PyTorch]
+	def _dPsi(psi_module):
+		I_t   = torch.tensor(I1_ann, dtype=torch.float32, requires_grad=True)
+		J_t   = torch.tensor(I2_ann, dtype=torch.float32, requires_grad=True)
+		III_t = torch.tensor(I3_ann, dtype=torch.float32)
+		Psi = psi_module(I_t, J_t, III_t)
+		dI, dJ = torch.autograd.grad(Psi.sum(), (I_t, J_t))
+		return dI.detach().numpy(), dJ.detach().numpy()
 
-	# New models
-	model_der_ann = k.models.Model([I_in, J_in, III_C_in], [dPsi_dI_ann, dPsi_dJ_ann])
-	model_der_ref = k.models.Model([I_in, J_in, III_C_in], [dPsi_dI_ref, dPsi_dJ_ref])
-	
-	# Predict derivatives
-	der_ann = model_der_ann.predict([I1_ann, I2_ann, I3_ann])
-	der_ref = model_der_ref.predict([I1_ann, I2_ann, I3_ann])
-	dPsi_dI_ann = np.squeeze(der_ann[0])/3.
-	dPsi_dJ_ann = np.squeeze(der_ann[1])/3.
-	dPsi_dI_ref = np.squeeze(der_ref[0])/3.
-	dPsi_dJ_ref = np.squeeze(der_ref[1])/3.
+	dPsi_dI_ann, dPsi_dJ_ann = _dPsi(model_full.psi_ann)
+	dPsi_dI_ref, dPsi_dJ_ref = _dPsi(ds.model.psi_ann)
+	dPsi_dI_ann = np.squeeze(dPsi_dI_ann) / 3.
+	dPsi_dJ_ann = np.squeeze(dPsi_dJ_ann) / 3.
+	dPsi_dI_ref = np.squeeze(dPsi_dI_ref) / 3.
+	dPsi_dJ_ref = np.squeeze(dPsi_dJ_ref) / 3.
 	
 	# Calculate principal stretches
 	ps = CM.invariants2principalStretches(I1_ann*3., I2_ann*3., I3_ann)
@@ -272,13 +261,13 @@ def calculate2dErrorFields(ds, model_full, maxI1, maxI2, stepSizeI1=0.5, stepSiz
 	I2_mat_df = pd.DataFrame(I2_mat)
 
 	# Get rid of unnecessary error values
-	Psi_rel_error[I1_killVal.values > I1_mat_df.values] = np.NaN
-	Psi_rel_error[I2_killVal.values > I2_mat_df.values] = np.NaN
-	P_rel_error[I1_killVal.values > I1_mat_df.values] = np.NaN
-	P_rel_error[I2_killVal.values > I2_mat_df.values] = np.NaN
+	Psi_rel_error[I1_killVal.values > I1_mat_df.values] = np.nan
+	Psi_rel_error[I2_killVal.values > I2_mat_df.values] = np.nan
+	P_rel_error[I1_killVal.values > I1_mat_df.values] = np.nan
+	P_rel_error[I2_killVal.values > I2_mat_df.values] = np.nan
 	
-	Psi_rel_error[np.isinf(Psi_rel_error)] = np.NaN
-	P_rel_error[np.isinf(P_rel_error)] = np.NaN
+	Psi_rel_error[np.isinf(Psi_rel_error)] = np.nan
+	P_rel_error[np.isinf(P_rel_error)] = np.nan
 	
 	return I1_mat, I2_mat, Psi_rel_error, P_rel_error
 
@@ -360,8 +349,8 @@ def saveLoss(his, outputFolder):
 
 	"""
 	scipy.io.savemat(outputFolder+'loss.mat', mdict={
-		'loss': his.history['loss'],
-		'val_loss': his.history['val_loss']
+		'loss': his['loss'],
+		'val_loss': his['val_loss']
 		})
 
 
@@ -380,21 +369,21 @@ def plotLoss(his, outputFolder=False):
 	"""
 	
 	plt.subplot(211)
-	plt.plot(his.history['loss'])
-	plt.plot(his.history['val_loss'])
+	plt.plot(his['loss'])
+	plt.plot(his['val_loss'])
 	plt.ylabel('Loss')
 	plt.xlabel('Epoch')
 	plt.legend(['Training data', 'Validation data'], loc='upper right')
-	plt.grid(b=True, which='major', color='#CCCCCC', linestyle='-')
+	plt.grid(visible=True, which='major', color='#CCCCCC', linestyle='-')
 	
 	plt.subplot(212)
-	plt.plot(his.history['loss'])
-	plt.plot(his.history['val_loss'])
+	plt.plot(his['loss'])
+	plt.plot(his['val_loss'])
 	plt.ylabel('Loss')
 	plt.xlabel('Epoch')
 	plt.legend(['Training data', 'Validation data'], loc='upper right')
 	plt.yscale('log')
-	plt.grid(b=True, which='major', color='#CCCCCC', linestyle='-')
+	plt.grid(visible=True, which='major', color='#CCCCCC', linestyle='-')
 
 	if isinstance(outputFolder, str):
 		plt.savefig(outputFolder+'loss')
@@ -427,73 +416,52 @@ def saveTrainingValidationSplit(train_indices, val_indices, outputFolder):
 
 
 def showModelSummary(model, numDir=0, outputFolder=False):
-	"""
-	Prints the model summary (layers and such) for the whole model and for each used subANN. If an outputFolder is specified, the output is saved.
+	"""Prints the module structure for the whole model and each sub-ANN. If an outputFolder is given, each is also written to a text file."""
+	def _dump(obj, suffix):
+		print('\n\n\n')
+		print(obj)
+		if isinstance(outputFolder, str):
+			with open(outputFolder + suffix, 'w') as f:
+				f.write(str(obj))
 
-	Parameters
-	----------
-	model : keras model
-		Keras model to be summarized.
-	numDir : int, optional
-		Number of preferred directions to use (0 for isotropy, more than 0 for anisotropy).
-	outputFolder : string, optional
-		Output folder (and filename prefix).
-
-	"""
-	
-	print('\n\n\n')
-	model.summary()
-	if isinstance(outputFolder, str):
-		with open(outputFolder+'modelSummary_Full.txt', 'w') as f: 
-			with redirect_stdout(f):
-				model.summary()
-	print('\n\n\n')
-	
-	model.get_layer('Psi').summary()
-	if isinstance(outputFolder, str):
-		with open(outputFolder+'modelSummary_sub_Psi.txt', 'w') as f: 
-			with redirect_stdout(f):
-				model.get_layer('Psi').summary()
-	print('\n\n\n')
-	
+	_dump(model, 'modelSummary_Full.txt')
+	_dump(model.psi_ann, 'modelSummary_sub_Psi.txt')
 	if numDir > 0:
-		model.get_layer('w').summary()
-		if isinstance(outputFolder, str):
-			with open(outputFolder+'modelSummary_sub_w.txt', 'w') as f: 
-				with redirect_stdout(f):
-					model.get_layer('w').summary()
-					
-		print('\n\n\n')
-		model.get_layer('dir').summary()
-		if isinstance(outputFolder, str):
-			with open(outputFolder+'modelSummary_sub_dir.txt', 'w') as f: 
-				with redirect_stdout(f):
-					model.get_layer('dir').summary()
-		print('\n\n\n')
-	
-	
-	
+		_dump(model.w_ann, 'modelSummary_sub_w.txt')
+		_dump(model.dir_ann, 'modelSummary_sub_dir.txt')
+
+
 def plotModelGraph(model, outputFolder, numDir=0):
-	"""
-	Saves a plot of the model graph.
-	
-	Attention: This function utilizes the software 'graphviz', which needs to be installed separately in order to work. See the documentation for k.utils.plot_model for details.
+	"""Saves PNG plots of the model graph (whole model + sub-ANNs) using torchview + graphviz."""
 
-	Parameters
-	----------
-	model : keras model
-		Keras model to be summarized.
-	outputFolder : string
-		Output folder (and filename prefix).
-	numDir : int, optional
-		Number of preferred directions to use (0 for isotropy, more than 0 for anisotropy).
+	numExtra = model.numExtra
+	numTens = model.numTens
+	device = next(model.parameters()).device
+	b = 4  # dummy batch size for tracing
 
-	"""
-	
-	k.utils.plot_model(model                 , show_shapes=True, dpi=300, expand_nested=True , show_layer_names=True, to_file=outputFolder+'modelGraph_Full_expanded.png')
-	k.utils.plot_model(model                 , show_shapes=True, dpi=300, expand_nested=False, show_layer_names=True, to_file=outputFolder+'modelGraph_Full.png' )
-	k.utils.plot_model(model.get_layer('Psi'), show_shapes=True, dpi=300, expand_nested=False, show_layer_names=True, to_file=outputFolder+'modelGraph_sub_Psi.png')
-	
+	def _save(m, input_data, name, expand=False):
+		try:
+			g = draw_graph(m, input_data=input_data, expand_nested=expand, device=device, graph_name=name)
+			g.visual_graph.render(filename=outputFolder + name, format='png', cleanup=True)
+		except Exception as e:
+			print('plotModelGraph: could not render %s (%s)' % (name, e))
+
+	# Dummy inputs (on the model's device)
+	extra = torch.randn(b, numExtra, device=device) if numExtra > 0 else None
+
+	# Note: the whole-model graph cannot be rendered with torchview, because the model's
+	# forward differentiates internally (ten2_P via torch.autograd.grad) and torchview's
+	# tracer cannot follow that. Only the learnable sub-ANNs (below) are graphed.
+
+	# Psi sub-ANN (plain MLP, traces cleanly)
+	I = torch.randn(b, numTens, device=device)
+	J = torch.randn(b, numTens, device=device)
+	III_C = torch.randn(b, 1, device=device)
+	if numExtra > 0:
+		_save(model.psi_ann, [I, J, III_C, extra], 'modelGraph_sub_Psi')
+	else:
+		_save(model.psi_ann, [I, J, III_C], 'modelGraph_sub_Psi')
+
 	if numDir > 0:
-		k.utils.plot_model(model.get_layer('dir'), show_shapes=True, dpi=300, expand_nested=False, show_layer_names=True, to_file=outputFolder+'modelGraph_sub_dir.png')
-		k.utils.plot_model(model.get_layer('w')  , show_shapes=True, dpi=300, expand_nested=False, show_layer_names=True, to_file=outputFolder+'modelGraph_sub_w.png')
+		_save(model.dir_ann, extra, 'modelGraph_sub_dir')
+		_save(model.w_ann, extra, 'modelGraph_sub_w')

@@ -84,8 +84,14 @@ class W_subANN(nn.Module):
 
 
 class Psi_subANN(nn.Module):
-	def __init__(self, computePsiOnly, numTens, numExtra):
+	def __init__(self, computePsiOnly, numTens, numExtra, Psi=None):
 		super().__init__()
+		if computePsiOnly:
+			self.psilayer = Psi
+
+		else:
+			self.psilayer = Psi(numTens + numExtra)
+			
 		self.computePsiOnly = computePsiOnly
 		self.numTens = numTens
 		self.numExtra = numExtra

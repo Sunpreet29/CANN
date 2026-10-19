@@ -225,6 +225,7 @@ def pre_Psi(F, extra, numExtra, numTens, numDir, w_model, dir_model): # Deals wi
 
 	# Determination of the exact reference configuration
 	F_isoRef         = ten2_F_isoRef(F)
+	F_isoRef.requires_grad_(True)  # so ten2_P can differentiate Psi_isoRef w.r.t. the reference F (tile(eye) is a leaf, so this is allowed)
 	C_isoRef         = ten2_C(F_isoRef)
 	inv_I_isoRef     = invariants_I(C_isoRef,H)
 	inv_J_isoRef     = invariants_J(C_isoRef,H)

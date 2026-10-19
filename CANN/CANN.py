@@ -86,18 +86,15 @@ class W_subANN(nn.Module):
 class Psi_subANN(nn.Module):
 	def __init__(self, computePsiOnly, numTens, numExtra, Psi=None):
 		super().__init__()
-		if computePsiOnly:
-			self.psilayer = Psi
-
-		else:
-			self.psilayer = Psi(numTens + numExtra)
-			
 		self.computePsiOnly = computePsiOnly
 		self.numTens = numTens
 		self.numExtra = numExtra
-		inDim = self.numTens + self.numExtra
-		self.psilayer = PsiLayers(inDim)
-		self.output_layer = nn.Linear(16, 1, bias=False)
+		if computePsiOnly:
+			self.psilayer = Psi                 # analytical strain-energy function (not the ANN)
+			self.output_layer = None            # unused in computePsiOnly mode
+		else:
+			self.psilayer = PsiLayers(numTens + numExtra)
+			self.output_layer = nn.Linear(16, 1, bias=False)
 
 	def forward(self, I, J, III_C, extra=False):
 		if self.computePsiOnly:
@@ -114,7 +111,7 @@ class Psi_subANN(nn.Module):
 
 
 class CANN(nn.Module):
-	def __init__(self, numTens, numDir, numExtra, computePsiOnly, incomp):
+	def __init__(self, numTens, numDir, numExtra, computePsiOnly, incomp, Psi=None):
 		super().__init__()
 		self.numTens = numTens
 		self.numDir = numDir
@@ -122,7 +119,7 @@ class CANN(nn.Module):
 		self.computePsiOnly = computePsiOnly
 		self.incomp = incomp
 
-		self.psi_ann = Psi_subANN(computePsiOnly, numTens, numExtra)
+		self.psi_ann = Psi_subANN(computePsiOnly, numTens, numExtra, Psi=Psi)
 
 		if numDir > 0:
 			if numExtra == 0:

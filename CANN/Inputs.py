@@ -200,7 +200,7 @@ class StrainEnergy(DataSource):
 		self.lamMax_ps = lamMax_ps
 		self.incomp = incomp
 
-		self.model = CANN(numTens=1, numDir=0, numExtra=0, computePsiOnly=True, incomp=True, Psi=Psi) # Create a CANN model with analytical strain energy (instead of an ANN)
+		self.model = CANN.CANN(numTens=1, numDir=0, numExtra=0, computePsiOnly=True, incomp=True, Psi=Psi) # Create a CANN model with analytical strain energy (instead of an ANN)
 	
 	def createMainCurves(self, numP_ut, numP_bt, numP_ps): # Generate the load curves for the three different load cases
 		ut = self.createCurve(self.lamMax_ut, numP_ut, CM.defGrad_ut)
